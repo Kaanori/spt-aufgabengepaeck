@@ -30,7 +30,7 @@ Delete the mod's files from `BepInEx/plugins/` (client part) and `SPT_Runtime/us
 
 ### What it is
 
-![The Quest Case window with scrollbar](docs/quest-case.png)
+![The Quest Case window with scrollbar](https://raw.githubusercontent.com/Kaanori/spt-aufgabengepaeck/main/docs/quest-case.png)
 
 The **Quest Case** is a new item for people whose secure container is always
 full. It takes **2x2** cells in the secure container and holds one grid of
