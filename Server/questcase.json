@@ -1,0 +1,20 @@
+{
+  // Groesse des Fachs im Quest Case (Breite = cellsH, Hoehe = cellsV).
+  // 10 x 30 = 300 Felder. Das Fenster im Spiel rollt (Aufgaben-Gepaeck-Plugin).
+  // ACHTUNG: nur vergroessern, nie verkleinern, solange etwas im Koffer
+  // liegt - Gegenstaende ausserhalb des neuen Rasters machen das Profil kaputt.
+  "Breite": 10,
+  "Hoehe": 30,
+
+  // Wer verkauft ihn (Kennung aus traders/<id>). Therapeutin = 54cb57776803fa99248b456e.
+  "Haendler": "54cb57776803fa99248b456e",
+
+  // Ab welcher Haendlerstufe (1-4).
+  "Stufe": 1,
+
+  // Preis in Rubel.
+  "Preis": 50000,
+
+  // false = gar nicht beim Haendler.
+  "BeimHaendler": true
+}

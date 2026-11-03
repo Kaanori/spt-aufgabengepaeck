@@ -27,11 +27,11 @@ using UnityEngine;
 [assembly: AssemblyCompany("AufgabenGepaeck")]
 [assembly: AssemblyConfiguration("Release")]
 [assembly: AssemblyDescription("Packt vor dem Raid die Aufgaben-Gegenstaende der gewaehlten Karte ein")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
-[assembly: AssemblyInformationalVersion("1.2.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyInformationalVersion("1.3.0")]
 [assembly: AssemblyProduct("AufgabenGepaeck")]
 [assembly: AssemblyTitle("Aufgaben-Gepaeck")]
-[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
 namespace AufgabenGepaeck
 {
 	internal class Platzierung
@@ -196,7 +196,12 @@ namespace AufgabenGepaeck
 				{
 					continue;
 				}
-				JArray val2 = val["conditions"] as JArray;
+				// Seit SPT 4.1 ist "conditions" ein Objekt mit den Listen
+				// AvailableForStart / AvailableForFinish / Fail - frueher war
+				// es selbst die Liste. Mit dem alten "as JArray" kam hier
+				// immer null heraus, und der Mod packte seit 4.1.6 nichts mehr.
+				JToken bedingungen = val["conditions"];
+				JArray val2 = (bedingungen as JArray) ?? ((bedingungen as JObject)?["AvailableForFinish"] as JArray);
 				if (val2 == null)
 				{
 					continue;
@@ -570,6 +575,16 @@ namespace AufgabenGepaeck
 				list.Add((EquipmentSlot)5);
 			}
 			List<CompoundItem> list2 = new List<CompoundItem>();
+			// Quest Case im Sicherheitsbehaelter hat Vorrang vor allem
+			// anderen. Ohne Koffer bleibt alles wie bisher.
+			if (MainPlugin.QuestCaseZuerst.Value)
+			{
+				CompoundItem koffer = QuestCaseSuchen(ausruestung);
+				if (koffer != null)
+				{
+					list2.Add(koffer);
+				}
+			}
 			foreach (EquipmentSlot item in list)
 			{
 				Slot slot = ausruestung.GetSlot(item);
@@ -580,6 +595,27 @@ namespace AufgabenGepaeck
 				}
 			}
 			return list2;
+		}
+
+		// Sucht den Quest Case irgendwo im Sicherheitsbehaelter (auch
+		// verschachtelt). Erkennung ueber die feste Vorlagen-ID, die der
+		// Server-Teil (AufgabenGepaeckServer.dll) vergibt.
+		internal static CompoundItem QuestCaseSuchen(InventoryEquipment ausruestung)
+		{
+			Slot fach = ausruestung?.GetSlot(EquipmentSlot.SecuredContainer);
+			CompoundItem tresor = fach?.ContainedItem as CompoundItem;
+			if (tresor == null)
+			{
+				return null;
+			}
+			foreach (Item gegenstand in AlleGegenstaende(tresor))
+			{
+				if (gegenstand != tresor && gegenstand.StringTemplateId == QuestCaseFenster.KofferId && gegenstand is CompoundItem koffer)
+				{
+					return koffer;
+				}
+			}
+			return null;
 		}
 
 		private static ItemAddress FreienPlatzSuchen(List<CompoundItem> ziele, Item gegenstand)
@@ -714,11 +750,13 @@ namespace AufgabenGepaeck
 			return Gegenstandsnamen.Name(bedarf.Vorlage);
 		}
 	}
-	[BepInPlugin("com.kaan.aufgaben-gepaeck", "Aufgaben-Gepaeck", "1.2.0")]
+	[BepInPlugin("com.kaan.aufgaben-gepaeck", "Aufgaben-Gepaeck", "1.3.0")]
 	[BepInDependency("com.SPT.core")]
 	public class MainPlugin : BaseUnityPlugin
 	{
 		internal static MainPlugin Selbst;
+
+		internal static ManualLogSource Log;
 
 		internal static ConfigEntry<bool> Eingeschaltet;
 
@@ -740,6 +778,14 @@ namespace AufgabenGepaeck
 
 		internal static ConfigEntry<string> DatenbankPfad;
 
+		internal static ConfigEntry<bool> QuestCaseZuerst;
+
+		internal static ConfigEntry<bool> QuestCaseRollen;
+
+		internal static ConfigEntry<int> QuestCaseZeilen;
+
+		internal static ConfigEntry<int> QuestCaseRaste;
+
 		private void Awake()
 		{
 			//IL_006a: Unknown result type (might be due to invalid IL or missing references)
@@ -748,6 +794,7 @@ namespace AufgabenGepaeck
 			//IL_01a8: Unknown result type (might be due to invalid IL or missing references)
 			//IL_01b5: Expected O, but got Unknown
 			Selbst = this;
+			Log = base.Logger;
 			Eingeschaltet = ((BaseUnityPlugin)this).Config.Bind<bool>("1. Allgemein", "Eingeschaltet", true, "Packt beim Raid-Start die Aufgaben-Gegenstaende der gewaehlten Karte ein.");
 			UeberallAufgaben = ((BaseUnityPlugin)this).Config.Bind<bool>("1. Allgemein", "Ueberall-Aufgaben mitnehmen", true, "Auch Gegenstaende fuer Aufgaben einpacken, die auf jeder Karte zaehlen. Aus, wenn nur karten-eigene Aufgaben zaehlen sollen.");
 			HoechstzahlProGegenstand = ((BaseUnityPlugin)this).Config.Bind<int>("1. Allgemein", "Hoechstzahl je Gegenstand", 10, new ConfigDescription("Sicherheitsnetz: nie mehr als so viele Stueck eines Gegenstands einpacken. Greift vor allem, wenn TaskListLocations fehlt - dann waeren fuer \"Is This a Reference\" sonst 24 WI-FI-Kameras faellig. 0 schaltet die Grenze ab.", (AcceptableValueBase)(object)new AcceptableValueRange<int>(0, 50), Array.Empty<object>()));
@@ -758,6 +805,21 @@ namespace AufgabenGepaeck
 			ZielTresorZuerst = ((BaseUnityPlugin)this).Config.Bind<bool>("2. Wohin", "Zuerst in den Sicherheitsbehaelter", true, "Wenn der Sicherheitsbehaelter erlaubt ist: ihn zuerst fuellen statt zuletzt. Sonst landen Aufgabengegenstaende im Rucksack, solange dort Platz ist.");
 			MeldungAnzeigen = ((BaseUnityPlugin)this).Config.Bind<bool>("3. Anzeige", "Meldung im Spiel", true, "Blendet nach dem Einpacken kurz ein, was eingepackt wurde und was fehlt.");
 			DatenbankPfad = ((BaseUnityPlugin)this).Config.Bind<string>("4. Fortgeschritten", "Pfad zur quests.json", "", "Leer lassen - dann wird die Aufgaben-Datenbank des Servers automatisch gesucht. Nur ausfuellen, wenn der SPT-Server woanders liegt.");
+			QuestCaseZuerst = ((BaseUnityPlugin)this).Config.Bind<bool>("2. Wohin", "Quest Case zuerst", true, "Liegt ein Quest Case im Sicherheitsbehaelter, wird er vor allem anderen gefuellt - unabhaengig von der Einstellung 'Sicherheitsbehaelter'. Ohne Koffer bleibt alles wie bisher.");
+			QuestCaseRollen = ((BaseUnityPlugin)this).Config.Bind<bool>("5. Quest Case", "Fenster rollen", true, "Das Fenster des Quest Case zeigt nur einen Ausschnitt und rollt mit dem Mausrad bzw. dem Rollbalken. Aus = Spiel-Fenster in voller Hoehe (ragt dann ueber den Bildschirm). Wirkt beim naechsten Oeffnen.");
+			QuestCaseZeilen = ((BaseUnityPlugin)this).Config.Bind<int>("5. Quest Case", "Sichtbare Zeilen", 10, new ConfigDescription("Wie viele Zeilen das Fenster hoechstens zeigt. Wird zusaetzlich auf die Bildschirmhoehe begrenzt.", (AcceptableValueBase)(object)new AcceptableValueRange<int>(3, 30), Array.Empty<object>()));
+			QuestCaseRaste = ((BaseUnityPlugin)this).Config.Bind<int>("5. Quest Case", "Zeilen je Mausrad-Raste", 2, new ConfigDescription("So viele Zeilen rollt das Fenster pro Raste des Mausrads.", (AcceptableValueBase)(object)new AcceptableValueRange<int>(1, 10), Array.Empty<object>()));
+			Harmony harmony = new Harmony("com.kaan.aufgaben-gepaeck");
+			// Der Fenster-Patch steht fuer sich: er soll auch greifen, wenn
+			// der Raid-Bildschirm sich einmal aendert.
+			try
+			{
+				QuestCaseFenster.Anmelden(harmony);
+			}
+			catch (Exception ex)
+			{
+				base.Logger.LogError((object)("[Aufgaben-Gepaeck] Quest-Case-Fenster: konnte nicht ansetzen (" + ex.Message + ") - das Fenster bleibt das normale Spiel-Fenster."));
+			}
 			MethodInfo methodInfo = AccessTools.GetDeclaredMethods(typeof(MatchMakerAcceptScreen)).FirstOrDefault((MethodInfo m) => m.Name == "Show" && m.GetParameters().Length == 3);
 			if (methodInfo == null)
 			{
@@ -766,7 +828,7 @@ namespace AufgabenGepaeck
 			}
 			try
 			{
-				new Harmony("com.kaan.aufgaben-gepaeck").Patch((MethodBase)methodInfo, (HarmonyMethod)null, new HarmonyMethod(typeof(MainPlugin), "NachRaidBildschirm", (Type[])null), (HarmonyMethod)null, (HarmonyMethod)null, (HarmonyMethod)null);
+				harmony.Patch((MethodBase)methodInfo, (HarmonyMethod)null, new HarmonyMethod(typeof(MainPlugin), "NachRaidBildschirm", (Type[])null), (HarmonyMethod)null, (HarmonyMethod)null, (HarmonyMethod)null);
 				base.Logger.LogInfo((object)"[Aufgaben-Gepaeck] Aktiv.");
 			}
 			catch (Exception ex)
