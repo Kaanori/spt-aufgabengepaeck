@@ -27,11 +27,11 @@ using UnityEngine;
 [assembly: AssemblyCompany("AufgabenGepaeck")]
 [assembly: AssemblyConfiguration("Release")]
 [assembly: AssemblyDescription("Packt vor dem Raid die Aufgaben-Gegenstaende der gewaehlten Karte ein")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
-[assembly: AssemblyInformationalVersion("1.3.0")]
+[assembly: AssemblyFileVersion("1.3.2.0")]
+[assembly: AssemblyInformationalVersion("1.3.2")]
 [assembly: AssemblyProduct("AufgabenGepaeck")]
 [assembly: AssemblyTitle("Aufgaben-Gepaeck")]
-[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.3.2.0")]
 namespace AufgabenGepaeck
 {
 	internal class Platzierung
@@ -56,11 +56,30 @@ namespace AufgabenGepaeck
 
 		public readonly List<string> Karten = new List<string>();
 	}
+	/// <summary>Eine Bedingung einer Aufgabe, die Gegenstaende verlangt:
+	/// <see cref="Anzahl"/> Stueck von EINER der <see cref="Ziele"/>
+	/// (mehrere Vorlagen sind Alternativen). Grundlage fuers Aufraeumen
+	/// des Quest Case nach dem Raid.</summary>
+	internal class Anforderung
+	{
+		public string BedingungId;
+
+		public string Art;
+
+		public readonly HashSet<string> Ziele = new HashSet<string>();
+
+		public int Anzahl;
+
+		public bool NurGefunden;
+	}
 	internal class Bedarf
 	{
 		public string Vorlage;
 
 		public int Anzahl;
+
+		// Zusatzstueck fuer Platzieren/Ablegen (Fehlversuch-Sicherheit).
+		public int Reserve;
 
 		public readonly List<string> Aufgaben = new List<string>();
 	}
@@ -148,6 +167,10 @@ namespace AufgabenGepaeck
 
 		private static Dictionary<string, Kartenangabe> _kartenangaben;
 
+		// Je Aufgabe alle Bedingungen, die Gegenstaende verlangen (Abgeben,
+		// Ablegen, Marker) - unabhaengig von der Karte.
+		private static Dictionary<string, List<Anforderung>> _anforderungen;
+
 		public static bool Geladen => _aufgaben != null;
 
 		public static string Meldung { get; private set; }
@@ -188,6 +211,7 @@ namespace AufgabenGepaeck
 				return false;
 			}
 			Dictionary<string, Aufgabe> dictionary = new Dictionary<string, Aufgabe>();
+			Dictionary<string, List<Anforderung>> anforderungen = new Dictionary<string, List<Anforderung>>();
 			foreach (JProperty item in JObject.Parse(File.ReadAllText(text)).Properties())
 			{
 				JToken value = item.Value;
@@ -210,6 +234,7 @@ namespace AufgabenGepaeck
 				foreach (JObject item2 in ((IEnumerable)val2).OfType<JObject>())
 				{
 					string text2 = (string)item2["conditionType"];
+					AnforderungMerken(anforderungen, item.Name, text2, item2);
 					if (text2 != "LeaveItemAtLocation" && text2 != "PlaceBeacon")
 					{
 						continue;
@@ -252,9 +277,122 @@ namespace AufgabenGepaeck
 				}
 			}
 			_aufgaben = dictionary;
+			_anforderungen = anforderungen;
 			_kartenangaben = KartenangabenLaden(spielordner);
 			Meldung = string.Format("{0} Aufgaben mit Mitbring-Gegenstaenden gelesen{1}.", _aufgaben.Count, (_kartenangaben == null) ? " (ohne TaskListLocations - Aufgaben mit Karte \"any\" bleiben ungenau)" : (", dazu " + _kartenangaben.Count + " Kartenangaben von TaskListLocations"));
 			return true;
+		}
+
+		private static void AnforderungMerken(Dictionary<string, List<Anforderung>> anforderungen, string aufgabeId, string art, JObject bedingung)
+		{
+			if (art != "HandoverItem" && art != "LeaveItemAtLocation" && art != "PlaceBeacon")
+			{
+				return;
+			}
+			JArray ziele = bedingung["target"] as JArray;
+			if (ziele == null)
+			{
+				return;
+			}
+			int anzahl = 1;
+			try
+			{
+				anzahl = ((bedingung["value"] == null) ? 1 : ((int?)bedingung["value"]).GetValueOrDefault(1));
+			}
+			catch
+			{
+			}
+			Anforderung a = new Anforderung
+			{
+				BedingungId = (string)bedingung["id"],
+				Art = art,
+				Anzahl = Math.Max(1, anzahl)
+			};
+			try
+			{
+				a.NurGefunden = bedingung["onlyFoundInRaid"] != null && (bool)bedingung["onlyFoundInRaid"];
+			}
+			catch
+			{
+			}
+			foreach (JToken z in ziele)
+			{
+				string t = (string)z;
+				if (!string.IsNullOrEmpty(t))
+				{
+					a.Ziele.Add(t);
+				}
+			}
+			if (a.Ziele.Count == 0)
+			{
+				return;
+			}
+			if (!anforderungen.TryGetValue(aufgabeId, out List<Anforderung> liste))
+			{
+				liste = new List<Anforderung>();
+				anforderungen[aufgabeId] = liste;
+			}
+			liste.Add(a);
+		}
+
+		/// <summary>Alle Gegenstands-Bedingungen der laufenden Aufgaben, auf
+		/// jeder Karte. Erledigte Bedingungen fallen weg, bei teilweise
+		/// abgegebenen zaehlt nur der Rest (Zaehler des Profils).</summary>
+		public static List<Anforderung> OffeneAnforderungen(EFT.Profile profil)
+		{
+			List<Anforderung> liste = new List<Anforderung>();
+			if (_anforderungen == null || profil?.QuestsData == null)
+			{
+				return liste;
+			}
+			foreach (EFT.Quests.QuestDataClass q in profil.QuestsData)
+			{
+				if (q == null || (int)q.Status != 2 || string.IsNullOrEmpty(q.Id) || !_anforderungen.TryGetValue(q.Id, out List<Anforderung> bedingungen))
+				{
+					continue;
+				}
+				HashSet<string> erledigt = new HashSet<string>();
+				if (q.CompletedConditions != null)
+				{
+					foreach (MongoID c in q.CompletedConditions)
+					{
+						erledigt.Add(c.ToString());
+					}
+				}
+				foreach (Anforderung b in bedingungen)
+				{
+					if (!string.IsNullOrEmpty(b.BedingungId) && erledigt.Contains(b.BedingungId))
+					{
+						continue;
+					}
+					int rest = b.Anzahl;
+					try
+					{
+						if (!string.IsNullOrEmpty(b.BedingungId) && profil.TaskConditionCounters != null
+							&& profil.TaskConditionCounters.TryGetValue(new MongoID(b.BedingungId), out EFT.Quests.TaskConditionCounter zaehler) && zaehler != null)
+						{
+							rest -= zaehler.Value;
+						}
+					}
+					catch
+					{
+					}
+					if (rest <= 0)
+					{
+						continue;
+					}
+					Anforderung offen = new Anforderung
+					{
+						BedingungId = b.BedingungId,
+						Art = b.Art,
+						Anzahl = rest,
+						NurGefunden = b.NurGefunden
+					};
+					offen.Ziele.UnionWith(b.Ziele);
+					liste.Add(offen);
+				}
+			}
+			return liste;
 		}
 
 		private static Dictionary<string, Kartenangabe> KartenangabenLaden(string spielordner)
@@ -373,7 +511,7 @@ namespace AufgabenGepaeck
 			}
 		}
 
-		public static List<Bedarf> Berechnen(string karte, IEnumerable<string> laufendeAufgaben, bool ueberallMitnehmen, int deckel)
+		public static List<Bedarf> Berechnen(string karte, IEnumerable<string> laufendeAufgaben, bool ueberallMitnehmen, int deckel, int reserve = 0)
 		{
 			Dictionary<string, Bedarf> dictionary = new Dictionary<string, Bedarf>();
 			if (_aufgaben == null || string.IsNullOrEmpty(karte))
@@ -423,6 +561,11 @@ namespace AufgabenGepaeck
 				{
 					value3.Anzahl = Math.Min(value3.Anzahl, deckel);
 				}
+			}
+			// Platzierungen enthalten nur PlaceBeacon/LeaveItemAtLocation, nie HandoverItem.
+			foreach (Bedarf value4 in dictionary.Values)
+			{
+				value4.Reserve = Math.Max(0, reserve);
 			}
 			return dictionary.Values.ToList();
 		}
@@ -512,7 +655,7 @@ namespace AufgabenGepaeck
 		// Laeuft den Gegenstand und alles darin rekursiv ab. Bewusst ueber die
 		// Schnittstelle IItemContainer statt ueber den obfuskierten Klassennamen -
 		// der aendert sich mit jedem EFT-Update.
-		private static IEnumerable<Item> AlleGegenstaende(Item wurzel)
+		internal static IEnumerable<Item> AlleGegenstaende(Item wurzel)
 		{
 			if (wurzel == null)
 			{
@@ -547,7 +690,23 @@ namespace AufgabenGepaeck
 				select i).Sum((Item i) => Math.Max(1, i.StackObjectsCount));
 		}
 
-		private static List<CompoundItem> Zielbehaelter(InventoryEquipment ausruestung)
+		/// <summary>KM Case von Keymaster (LennoxP90). Sein erstes Fach nimmt
+		/// nur Schluessel und Schluesselkarten.</summary>
+		internal const string KmCaseId = "6707ed1c4b4d4b6d00000001";
+
+		internal static bool IstSchluessel(Item gegenstand)
+		{
+			try
+			{
+				return gegenstand != null && gegenstand.GetItemComponent<KeyComponent>() != null;
+			}
+			catch
+			{
+				return false;
+			}
+		}
+
+		private static List<CompoundItem> Zielbehaelter(InventoryEquipment ausruestung, Item gegenstand)
 		{
 			//IL_0063: Unknown result type (might be due to invalid IL or missing references)
 			//IL_0068: Unknown result type (might be due to invalid IL or missing references)
@@ -575,9 +734,19 @@ namespace AufgabenGepaeck
 				list.Add((EquipmentSlot)5);
 			}
 			List<CompoundItem> list2 = new List<CompoundItem>();
+			// Schluessel gehoeren in den KM Case, nie in den Quest Case.
+			// Ohne KM Case gilt die alte Reihenfolge - ohne Quest Case.
+			if (IstSchluessel(gegenstand))
+			{
+				CompoundItem km = ImSicherheitsbehaelterSuchen(ausruestung, KmCaseId);
+				if (km != null)
+				{
+					list2.Add(km);
+				}
+			}
 			// Quest Case im Sicherheitsbehaelter hat Vorrang vor allem
 			// anderen. Ohne Koffer bleibt alles wie bisher.
-			if (MainPlugin.QuestCaseZuerst.Value)
+			else if (MainPlugin.QuestCaseZuerst.Value)
 			{
 				CompoundItem koffer = QuestCaseSuchen(ausruestung);
 				if (koffer != null)
@@ -602,6 +771,11 @@ namespace AufgabenGepaeck
 		// Server-Teil (AufgabenGepaeckServer.dll) vergibt.
 		internal static CompoundItem QuestCaseSuchen(InventoryEquipment ausruestung)
 		{
+			return ImSicherheitsbehaelterSuchen(ausruestung, QuestCaseFenster.KofferId);
+		}
+
+		internal static CompoundItem ImSicherheitsbehaelterSuchen(InventoryEquipment ausruestung, string vorlage)
+		{
 			Slot fach = ausruestung?.GetSlot(EquipmentSlot.SecuredContainer);
 			CompoundItem tresor = fach?.ContainedItem as CompoundItem;
 			if (tresor == null)
@@ -610,7 +784,7 @@ namespace AufgabenGepaeck
 			}
 			foreach (Item gegenstand in AlleGegenstaende(tresor))
 			{
-				if (gegenstand != tresor && gegenstand.StringTemplateId == QuestCaseFenster.KofferId && gegenstand is CompoundItem koffer)
+				if (gegenstand != tresor && gegenstand.StringTemplateId == vorlage && gegenstand is CompoundItem koffer)
 				{
 					return koffer;
 				}
@@ -657,7 +831,8 @@ namespace AufgabenGepaeck
 			foreach (Bedarf bedarf in bedarfsliste.OrderByDescending((Bedarf b) => b.Anzahl))
 			{
 				int num = Bestand((Item)(object)equipment, bedarf.Vorlage);
-				int num2 = bedarf.Anzahl - num;
+				int basis = Math.Max(0, bedarf.Anzahl - num);
+				int num2 = bedarf.Anzahl + bedarf.Reserve - num;
 				if (num2 <= 0)
 				{
 					continue;
@@ -668,7 +843,10 @@ namespace AufgabenGepaeck
 					select i).ToList();
 				if (list.Count == 0)
 				{
-					packbericht.Fehlt.Add(string.Format("{0}x {1} ({2})", num2, Aufgabenname(bedarf), string.Join(", ", bedarf.Aufgaben.ToArray())));
+					if (basis > 0)
+					{
+						packbericht.Fehlt.Add(string.Format("{0}x {1} ({2})", basis, Aufgabenname(bedarf), string.Join(", ", bedarf.Aufgaben.ToArray())));
+					}
 					continue;
 				}
 				string arg = Anzeigename(list[0]);
@@ -680,7 +858,7 @@ namespace AufgabenGepaeck
 					{
 						break;
 					}
-					List<CompoundItem> list2 = Zielbehaelter(equipment);
+					List<CompoundItem> list2 = Zielbehaelter(equipment, item2);
 					if (list2.Count == 0)
 					{
 						flag = true;
@@ -727,11 +905,13 @@ namespace AufgabenGepaeck
 				}
 				if (num3 > 0)
 				{
-					packbericht.Eingepackt.Add($"{num3}x {arg}");
+					int zusatz = Math.Max(0, num3 - basis);
+					packbericht.Eingepackt.Add(zusatz > 0 ? $"{num3}x {arg} (+{zusatz} spare)" : $"{num3}x {arg}");
 				}
-				if (num2 > 0)
+				int basisRest = Math.Max(0, basis - num3);
+				if (basisRest > 0)
 				{
-					string item = string.Format("{0}x {1} ({2})", num2, arg, string.Join(", ", bedarf.Aufgaben.ToArray()));
+					string item = string.Format("{0}x {1} ({2})", basisRest, arg, string.Join(", ", bedarf.Aufgaben.ToArray()));
 					if (flag)
 					{
 						packbericht.KeinPlatz.Add(item);
@@ -750,8 +930,11 @@ namespace AufgabenGepaeck
 			return Gegenstandsnamen.Name(bedarf.Vorlage);
 		}
 	}
-	[BepInPlugin("com.kaan.aufgaben-gepaeck", "Aufgaben-Gepaeck", "1.3.0")]
+	[BepInPlugin("com.kaan.aufgaben-gepaeck", "Aufgaben-Gepaeck", "1.3.2")]
 	[BepInDependency("com.SPT.core")]
+	// Weich: nur damit StashManagementHelper VOR uns geladen ist und
+	// QuestCaseSortieren seine Pruefungen findet. Ohne ihn laeuft alles.
+	[BepInDependency(QuestCaseSortieren.HelferGuid, BepInDependency.DependencyFlags.SoftDependency)]
 	public class MainPlugin : BaseUnityPlugin
 	{
 		internal static MainPlugin Selbst;
@@ -763,6 +946,8 @@ namespace AufgabenGepaeck
 		internal static ConfigEntry<bool> UeberallAufgaben;
 
 		internal static ConfigEntry<int> HoechstzahlProGegenstand;
+
+		internal static ConfigEntry<int> ReserveStuecke;
 
 		internal static ConfigEntry<bool> ZielRucksack;
 
@@ -786,6 +971,10 @@ namespace AufgabenGepaeck
 
 		internal static ConfigEntry<int> QuestCaseRaste;
 
+		internal static ConfigEntry<bool> QuestCaseWieLager;
+
+		internal static ConfigEntry<bool> QuestCaseAufraeumen;
+
 		private void Awake()
 		{
 			//IL_006a: Unknown result type (might be due to invalid IL or missing references)
@@ -798,6 +987,7 @@ namespace AufgabenGepaeck
 			Eingeschaltet = ((BaseUnityPlugin)this).Config.Bind<bool>("1. Allgemein", "Eingeschaltet", true, "Packt beim Raid-Start die Aufgaben-Gegenstaende der gewaehlten Karte ein.");
 			UeberallAufgaben = ((BaseUnityPlugin)this).Config.Bind<bool>("1. Allgemein", "Ueberall-Aufgaben mitnehmen", true, "Auch Gegenstaende fuer Aufgaben einpacken, die auf jeder Karte zaehlen. Aus, wenn nur karten-eigene Aufgaben zaehlen sollen.");
 			HoechstzahlProGegenstand = ((BaseUnityPlugin)this).Config.Bind<int>("1. Allgemein", "Hoechstzahl je Gegenstand", 10, new ConfigDescription("Sicherheitsnetz: nie mehr als so viele Stueck eines Gegenstands einpacken. Greift vor allem, wenn TaskListLocations fehlt - dann waeren fuer \"Is This a Reference\" sonst 24 WI-FI-Kameras faellig. 0 schaltet die Grenze ab.", (AcceptableValueBase)(object)new AcceptableValueRange<int>(0, 50), Array.Empty<object>()));
+			ReserveStuecke = ((BaseUnityPlugin)this).Config.Bind<int>("1. Allgemein", "Spare items for place/leave objectives", 1, new ConfigDescription("Extra pieces per item type to take along for objectives where an item is placed or left in the raid (markers, beacons, packs), so one failed attempt does not cost the quest. Only taken if the stash has enough; never for hand-over items. Unused spares go back to the stash after the raid (Quest Case clean-up). 0 = off.", (AcceptableValueBase)(object)new AcceptableValueRange<int>(0, 3), Array.Empty<object>()));
 			ZielRucksack = ((BaseUnityPlugin)this).Config.Bind<bool>("2. Wohin", "Rucksack", true, "Zuerst in den Rucksack legen.");
 			ZielWeste = ((BaseUnityPlugin)this).Config.Bind<bool>("2. Wohin", "Taktische Weste", true, "Danach in die Weste.");
 			ZielTaschen = ((BaseUnityPlugin)this).Config.Bind<bool>("2. Wohin", "Taschen", true, "Danach in die Hosentaschen.");
@@ -809,6 +999,8 @@ namespace AufgabenGepaeck
 			QuestCaseRollen = ((BaseUnityPlugin)this).Config.Bind<bool>("5. Quest Case", "Fenster rollen", true, "Das Fenster des Quest Case zeigt nur einen Ausschnitt und rollt mit dem Mausrad bzw. dem Rollbalken. Aus = Spiel-Fenster in voller Hoehe (ragt dann ueber den Bildschirm). Wirkt beim naechsten Oeffnen.");
 			QuestCaseZeilen = ((BaseUnityPlugin)this).Config.Bind<int>("5. Quest Case", "Sichtbare Zeilen", 10, new ConfigDescription("Wie viele Zeilen das Fenster hoechstens zeigt. Wird zusaetzlich auf die Bildschirmhoehe begrenzt.", (AcceptableValueBase)(object)new AcceptableValueRange<int>(3, 30), Array.Empty<object>()));
 			QuestCaseRaste = ((BaseUnityPlugin)this).Config.Bind<int>("5. Quest Case", "Zeilen je Mausrad-Raste", 2, new ConfigDescription("So viele Zeilen rollt das Fenster pro Raste des Mausrads.", (AcceptableValueBase)(object)new AcceptableValueRange<int>(1, 10), Array.Empty<object>()));
+			QuestCaseWieLager = ((BaseUnityPlugin)this).Config.Bind<bool>("5. Quest Case", "Wie das Lager sortieren", true, "Der Sortierknopf ordnet den Quest Case genau wie das Lager (Reihenfolge, Stapeln, Zusammenklappen, Drehen - die Einstellungen von StashManagementHelper). Aus = nackte Spiel-Sortierung. Ohne StashManagementHelper wirkungslos.");
+			QuestCaseAufraeumen = ((BaseUnityPlugin)this).Config.Bind<bool>("5. Quest Case", "Nach dem Raid aufräumen", true, "Zurueck im Menue nach einem Raid: Was im Quest Case liegt und keine laufende Aufgabe braucht, kommt ins Versteck. Schluessel kommen in den KM Case (Keymaster), wenn er Platz hat, sonst ins Versteck.");
 			Harmony harmony = new Harmony("com.kaan.aufgaben-gepaeck");
 			// Der Fenster-Patch steht fuer sich: er soll auch greifen, wenn
 			// der Raid-Bildschirm sich einmal aendert.
@@ -819,6 +1011,22 @@ namespace AufgabenGepaeck
 			catch (Exception ex)
 			{
 				base.Logger.LogError((object)("[Aufgaben-Gepaeck] Quest-Case-Fenster: konnte nicht ansetzen (" + ex.Message + ") - das Fenster bleibt das normale Spiel-Fenster."));
+			}
+			try
+			{
+				QuestCaseSortieren.Anmelden(harmony);
+			}
+			catch (Exception ex)
+			{
+				base.Logger.LogError((object)("[Aufgaben-Gepaeck] Quest-Case-Sortierung: konnte nicht ansetzen (" + ex.Message + ") - der Quest Case sortiert mit der Spiel-Sortierung."));
+			}
+			try
+			{
+				Aufraeumer.Anmelden(harmony);
+			}
+			catch (Exception ex)
+			{
+				base.Logger.LogError((object)("[Aufgaben-Gepaeck] Aufraeumen nach dem Raid: konnte nicht ansetzen (" + ex.Message + ")."));
 			}
 			MethodInfo methodInfo = AccessTools.GetDeclaredMethods(typeof(MatchMakerAcceptScreen)).FirstOrDefault((MethodInfo m) => m.Name == "Show" && m.GetParameters().Length == 3);
 			if (methodInfo == null)
@@ -877,7 +1085,7 @@ namespace AufgabenGepaeck
 			List<string> list = (from q in val.QuestsData
 				where q != null && (int)q.Status == 2 && !string.IsNullOrEmpty(q.Id)
 				select q.Id).ToList();
-			List<Bedarf> list2 = Aufgabendaten.Berechnen(text, list, UeberallAufgaben.Value, HoechstzahlProGegenstand.Value);
+			List<Bedarf> list2 = Aufgabendaten.Berechnen(text, list, UeberallAufgaben.Value, HoechstzahlProGegenstand.Value, ReserveStuecke.Value);
 			if (list2.Count == 0)
 			{
 				logger.LogInfo((object)$"[Aufgaben-Gepaeck] Karte {text}: keine der {list.Count} laufenden Aufgaben braucht etwas von zuhause.");

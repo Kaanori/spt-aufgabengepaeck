@@ -16,7 +16,7 @@ bug, please open an [issue](https://github.com/Kaanori/spt-aufgabengepaeck/issue
 
 ## Installation
 
-1. Download `AufgabenGepaeck-1.3.0.zip` from the [Releases](https://github.com/Kaanori/spt-aufgabengepaeck/releases) page.
+1. Download `AufgabenGepaeck-1.3.2.zip` from the [Releases](https://github.com/Kaanori/spt-aufgabengepaeck/releases) page.
 2. Extract it **into your SPT game folder** (the folder that contains `EscapeFromTarkov.exe`).
    The ZIP already has the right layout; the mod ends up in `BepInEx/plugins/` (client part) and `SPT_Runtime/user/mods/AufgabenGepaeck/` (server part).
    On Windows, make sure "Extract All" does not add an extra subfolder.
@@ -25,6 +25,11 @@ bug, please open an [issue](https://github.com/Kaanori/spt-aufgabengepaeck/issue
 ## Uninstall
 
 Delete the mod's files from `BepInEx/plugins/` (client part) and `SPT_Runtime/user/mods/AufgabenGepaeck/` (server part) (settings: `BepInEx/config/` for client mods) and restart the SPT server and the game.
+
+## Version 1.3.2 (2026-11-08)
+
+- **1.3.2:** new setting *Spare items for place/leave objectives* (0-3, default 1): packs extra pieces for place/leave objectives (markers, beacons), never for hand-over items. Unused spares return to the stash via the Quest Case clean-up.
+- **1.3.1:** the Quest Case sorts like the stash. After a raid it is tidied up: everything not needed for your active quests goes back to the stash, keys go to the KM Case (Keymaster).
 
 ## Version 1.3.0 (2026-11-03) - Quest Case
 
@@ -169,4 +174,4 @@ Bugs and questions: [GitHub issues](https://github.com/Kaanori/spt-aufgabengepae
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/Kaanori/spt-aufgabengepaeck/blob/main/LICENSE).
